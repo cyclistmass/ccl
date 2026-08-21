@@ -926,17 +926,28 @@ spentry stack_misc_alloc
          * zero its data area, mark it boxed (type=0).  "_nz": imm1 always
          * includes the fixed frame overhead, so the frame can never be
          * empty -- ppc-macros.s:695-704,721-725. */
+        /* BORN RAW.  THIS IS THE SITE A CUSTOMER CORE LANDED IN.  The old
+           sequence lowered tsp, zeroed the frame upward, and wrote the object
+           header LAST.  A GC suspending this thread inside the zeroing loop
+           found type == 0 over a partly-zeroed payload: the core showed zeros
+           up to 0x...4aa8 and, above that, a stale 32-bit character string
+           whose pair 0x0000003200000036 has fulltag 6 (fulltag_nodeheader_0),
+           decoded as element_count 838860800, and mark_root(*--base) walked
+           off the end.
+           The header is now written BEFORE the type word is cleared, and the
+           frame is raw until both are done. */
         mov     temp4, tsp                        /* old tsp -> backlink */
-        sub     tsp, tsp, imm1
-        str     temp4, [tsp, #tsp_frame.backlink]
-        mov     temp0, tsp
+        sub     temp0, tsp, imm1                  /* the frame's future base */
+        stp     temp4, temp4, [temp0]             /* backlink + NON-ZERO type */
+        mov     tsp, temp0                        /* publish: born raw */
+        add     temp0, tsp, #8                    /* pre-index lands at +16 */
         add     temp1, tsp, imm1
         sub     temp1, temp1, #8
 7:      str     xzr, [temp0, #8]!
         cmp     temp0, temp1
         b.ne    7b
-        str     xzr, [tsp, #tsp_frame.type]
-        str     imm0, [tsp, #tsp_frame.data_offset]
+        str     imm0, [tsp, #tsp_frame.data_offset]   /* header BEFORE type */
+        str     xzr, [tsp, #tsp_frame.type]           /* now scannable */
         add     arg_z, tsp, #(tsp_frame.data_offset + fulltag_misc)
         ret
 5:      /* bit-vector: byte_count = (arg_y + 7<<fixnumshift) >> (3+fixnumshift) */
@@ -953,9 +964,7 @@ spentry stack_misc_alloc
          * misc_alloc instead; arg_y/arg_z are unchanged, matching
          * misc_alloc's own (count, subtag) calling convention. */
         mov     temp4, tsp
-        sub     tsp, tsp, #tsp_frame.data_offset
-        str     temp4, [tsp, #tsp_frame.backlink]
-        str     tsp,   [tsp, #tsp_frame.type]
+        stp     temp4, temp4, [tsp, #-tsp_frame.data_offset]!  /* born raw, 1 insn */
         b       _SPmisc_alloc
 endsp stack_misc_alloc
 
@@ -1273,15 +1282,29 @@ endsp makestackblock0
    the data area so the GC never scans garbage.  \size = total bytes
    including tsp_frame.fixed_overhead; clobbers both operands and NZCV. */
 .macro tsp_alloc_var_boxed size, tmp
-        mov \tmp, tsp
-        sub tsp, tsp, \size
-        str \tmp, [tsp, #tsp_frame.backlink]
-        str xzr, [tsp, #tsp_frame.type]
+        /* BORN RAW.  This used to lower tsp and then write type=0 BEFORE the
+           zeroing loop, so the frame was explicitly marked "scan my contents
+           as pointers" while those contents were still whatever the stack held
+           before.  A GC in that window walks junk.  Observed in a customer
+           core: a stale 32-bit character string decoded as a node header with
+           an element count of 838860800.
+           So: backlink and a NON-ZERO type are written at the future base
+           BEFORE tsp publishes the frame, and the type word is cleared only
+           after the payload is zeroed. */
+        mov \tmp, tsp                          /* old tsp: backlink and loop end */
+        sub \size, \tmp, \size                 /* the frame's future base       */
+        stp \tmp, \tmp, [\size]                /* backlink + NON-ZERO type       */
+        mov tsp, \size                         /* publish: born raw             */
         add \size, tsp, #tsp_frame.fixed_overhead
         b 8886f
 8885:   str xzr, [\size], #node_size
 8886:   cmp \size, \tmp
         b.ne 8885b
+        /* NOT set_tsp_frame_boxed: that macro is defined ~1700 lines LATER in
+           this file and GNU as expands macros in source order, so naming it
+           here is an "unknown mnemonic" error.  The assembler caught that on
+           the first attempt, four times, once per caller. */
+        str xzr, [tsp, #tsp_frame.type]        /* only NOW is it scannable      */
 .endm
 
 /* ===== gvset ===== */
@@ -3026,10 +3049,15 @@ _ends
 /* temp-stack allocation (real tsp register, PPC discipline).
    ppc-macros.s TSP_Alloc_Fixed_Unboxed / Set_TSP_Frame_{Un,}boxed. */
 .macro tsp_alloc_fixed_unboxed nbytes, tmp
+        /* ONE instruction: the pre-indexed stp lowers tsp and writes both the
+           backlink and a non-zero type word at once, so there is no window in
+           which the frame exists with a junk type.  This is the same shape as
+           the vinsn fix in 8404d6ba (`stp link link (:@! tsp (:$ -32))').
+           The size is an assembly-time immediate here, which is what makes the
+           single-instruction form possible; the variable-size macros above
+           cannot use it. */
         mov \tmp, tsp
-        sub tsp, tsp, #((\nbytes) + tsp_frame.data_offset)
-        str \tmp, [tsp, #tsp_frame.backlink]
-        str tsp, [tsp, #tsp_frame.type]         /* non-zero => unboxed */
+        stp \tmp, \tmp, [tsp, #-((\nbytes) + tsp_frame.data_offset)]!
 .endm
 .macro set_tsp_frame_boxed
         str xzr, [tsp, #tsp_frame.type]         /* zero => boxed (GC-scanned) */
@@ -3211,9 +3239,13 @@ endsp throw
 /* Variable-size boxed tsp frame (ppc-macros.s TSP_Alloc_Var_Boxed_nz).
    \size = 16-aligned data byte count (in a reg).  \p,\e scratch. */
         .macro tsp_alloc_var_boxed_nz size, p, e
+        /* BORN RAW -- see tsp_alloc_var_boxed.  The type word used to hold
+           stack JUNK for the whole duration of the zeroing loop below, and
+           junk that happens to be zero means "scan me". */
         mov \p, tsp
-        sub tsp, tsp, \size
-        str \p, [tsp, #tsp_frame.backlink]
+        sub \e, \p, \size                     /* the frame's future base      */
+        stp \p, \p, [\e]                      /* backlink + NON-ZERO type      */
+        mov tsp, \e                           /* publish: born raw            */
         /* zero data words [data_offset .. backlink) so GC sees clean slots */
         add \e, tsp, \size                    /* end = old tsp                */
         add \p, tsp, #tsp_frame.data_offset
