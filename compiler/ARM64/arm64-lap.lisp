@@ -67,7 +67,7 @@
   (terpri))
 
 (defun %define-arm64-lap-function (name body &optional (bits 0))
-  (with-dll-node-freelist (elements arm64::*instruction-freelist*)
+  (let ((elements (make-dll-header)))
     (let* ((arm64::*labels* ())
            (arm64::*constants* ())
            (*arm64-lap-lfun-bits* bits)

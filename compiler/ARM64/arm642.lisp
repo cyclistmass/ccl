@@ -605,7 +605,7 @@
                  (do-dll-nodes (v vinsns) (format t "~&~s" v))
                  (format t "~%~%"))
 
-               (with-dll-node-freelist (code arm64::*instruction-freelist*)
+               (let ((code (make-dll-header)))
                  (let* ((arm64::*labels* nil)
                         debug-info)
                      (arm642-expand-vinsns vinsns code)
