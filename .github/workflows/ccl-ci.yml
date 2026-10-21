@@ -1,0 +1,171 @@
+# ccl-ci.yml -- pre-send check on the public fork cyclistmass/ccl.
+# Lives alone on the fork's default branch `fork-ci` (an orphan branch),
+# so it never rides into a PR.  Dispatched by tools/fork-ci.sh.
+# Each tree builds the way Clozure's own CI does (kernel make, then
+# (rebuild-ccl :clean t)), runs the ccl-tests suite, then runs an
+# optional reproducer N times, P at a time, with a kill timeout.
+# Holds CCL content only.  Nothing from GM or ARIS ever goes here.
+name: ccl-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      trees:
+        description: 'space-separated NAME=OWNER/REPO@REF, e.g. M=Clozure/ccl@master F=cyclistmass/ccl@my-branch'
+        required: true
+      arches:
+        description: 'x86 arm64 (space-separated)'
+        default: 'x86 arm64'
+      tests:
+        description: 'ccl-tests as OWNER/REPO@REF'
+        default: 'Clozure/ccl-tests@master'
+      suite:
+        description: 'run the ccl-tests suite (yes/no)'
+        default: 'yes'
+      repro:
+        description: 'reproducer path inside the tests checkout (empty = none)'
+        default: ''
+      repro_n:
+        description: 'reproducer runs per tree'
+        default: '10'
+      repro_par:
+        description: 'reproducer runs at once'
+        default: '4'
+      repro_timeout:
+        description: 'seconds before one run is killed'
+        default: '300'
+      stop_on_fail:
+        description: 'stop a tree at its first failing run (yes/no)'
+        default: 'yes'
+      tag:
+        description: 'free text so tools/fork-ci.sh can find this run'
+        default: ''
+
+run-name: ccl-ci ${{ inputs.tag }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          TREES: ${{ inputs.trees }}
+          ARCHES: ${{ inputs.arches }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re
+          inc = []
+          for a in os.environ["ARCHES"].split():
+              assert a in ("x86", "arm64"), a
+              for t in os.environ["TREES"].split():
+                  m = re.fullmatch(r"([A-Za-z0-9_-]+)=([\w.-]+/[\w.-]+)@([\w./-]+)", t)
+                  assert m, t
+                  inc.append({"arch": a, "name": m[1], "repo": m[2], "ref": m[3],
+                              "os": "ubuntu-24.04-arm" if a == "arm64" else "ubuntu-latest"})
+          print("matrix=" + json.dumps({"include": inc}))
+          PY
+
+  build-test:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.arch }} ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      ARCH: ${{ matrix.arch }}
+      TREE: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: ccl
+      - name: Tests checkout
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          git clone -q "https://github.com/${TESTS%@*}.git" ccl-tests
+          git -C ccl-tests checkout -q "${TESTS#*@}"
+      - name: Build
+        run: |
+          if [ "$ARCH" = arm64 ]; then
+            K=arm64cl KD=linuxarm64
+            URL=https://github.com/Clozure/ccl/releases/download/v1.13-arm64-pre2/linuxarm64.tar.gz
+          else
+            K=lx86cl64 KD=linuxx8664
+            URL=https://github.com/Clozure/ccl/releases/latest/download/linuxx86.tar.gz
+          fi
+          echo "K=$K" >> "$GITHUB_ENV"
+          curl -sSfL -o boot.tar.gz "$URL"
+          cd ccl && tar xf ../boot.tar.gz
+          echo "HEAD $(git rev-parse --short=8 HEAD)" | tee -a ../summary.txt
+          s=$(date +%s); (cd lisp-kernel/$KD && make) > ../make.log 2>&1; rc=$?
+          echo "KMAKE rc=$rc secs=$(( $(date +%s) - s ))" | tee -a ../summary.txt
+          [ $rc = 0 ] || { tail -30 ../make.log; exit 1; }
+          s=$(date +%s)
+          timeout -k 30 2400 ./$K --batch --quiet -n -e '(rebuild-ccl :clean t)' </dev/null > ../rebuild.log 2>&1; rc=$?
+          echo "REBUILD rc=$rc secs=$(( $(date +%s) - s )) warnings=$(grep -ci warning ../rebuild.log)" | tee -a ../summary.txt
+          [ $rc = 0 ] || { tail -40 ../rebuild.log; exit 1; }
+          echo "IMG $(md5sum $K $K.image | cut -c1-8 | tr '\n' ' ')" | tee -a ../summary.txt
+      - name: Suite
+        if: inputs.suite == 'yes'
+        run: |
+          cd ccl-tests
+          echo "TESTS HEAD $(git rev-parse --short=8 HEAD)" | tee -a ../summary.txt
+          s=$(date +%s)
+          timeout -k 60 3600 make CCL=../ccl/$K > ../suite.log 2>&1; rc=$?
+          echo "SUITE rc=$rc secs=$(( $(date +%s) - s ))" | tee -a ../summary.txt
+          grep -a -E 'tests? (succeeded|failed)|out of|of [0-9]+ tests' ../suite.log | tail -3 | tee -a ../summary.txt
+          grep -a -A3 'tests failed' ../suite.log | grep -a -o -E 'CCL\.[A-Z0-9.#-]+' | sort -u | sed 's/^/FAILING /' | tee -a ../summary.txt
+          exit $rc
+      - name: Reproducer
+        if: inputs.repro != '' && !cancelled()
+        env:
+          F: ${{ inputs.repro }}
+          N: ${{ inputs.repro_n }}
+          P: ${{ inputs.repro_par }}
+          TO: ${{ inputs.repro_timeout }}
+          STOP: ${{ inputs.stop_on_fail }}
+        run: |
+          F=$PWD/ccl-tests/$F; mkdir -p repro
+          echo "REPRO $(md5sum "$F" | cut -c1-8) n=$N par=$P timeout=$TO" | tee -a summary.txt
+          one() {  # one <i>: a fresh process group, killed whole on timeout
+            local s=$(date +%s)
+            (cd ccl && setsid timeout -k 10 "$TO" ./$K --no-init --batch -l "$F" \
+               > ../repro/$1.log 2>&1 < /dev/null); local rc=$?
+            echo "$1 rc=$rc secs=$(( $(date +%s) - s ))" > repro/$1.rc
+          }
+          i=0; p=0; f=0
+          while [ $i -lt $N ]; do
+            for j in $(seq 1 $P); do
+              [ $i -lt $N ] || break; i=$((i+1)); one $i &
+            done
+            wait
+            p=$(grep -l ' rc=0 ' repro/*.rc | wc -l); f=$(( $(ls repro/*.rc | wc -l) - p ))
+            [ "$STOP" = yes ] && [ $f -gt 0 ] && break
+          done
+          sort -n repro/*.rc | sed 's/^/run /' | tee -a summary.txt
+          echo "TALLY pass=$p fail=$f of $(ls repro/*.rc | wc -l) (asked $N)" | tee -a summary.txt
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### $ARCH $TREE"; echo '```'; cat summary.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat summary.txt 2>/dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.arch }}-${{ matrix.name }}
+          path: |
+            summary.txt
+            make.log
+            rebuild.log
+            suite.log
+            repro/
+          retention-days: 14
