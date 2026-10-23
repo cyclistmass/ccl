@@ -134,6 +134,10 @@ jobs:
           TO: ${{ inputs.repro_timeout }}
           STOP: ${{ inputs.stop_on_fail }}
         run: |
+          # GitHub runs steps under bash -e.  A failing run is a RESULT here,
+          # so -e must be off, or one() exits before it writes its .rc file
+          # and the tally counts only the passing runs.
+          set +e
           F=$PWD/ccl-tests/$F; mkdir -p repro
           echo "REPRO $(md5sum "$F" | cut -c1-8) n=$N par=$P timeout=$TO" | tee -a summary.txt
           one() {  # one <i>: a fresh process group, killed whole on timeout
@@ -148,11 +152,15 @@ jobs:
               [ $i -lt $N ] || break; i=$((i+1)); one $i &
             done
             wait
-            p=$(grep -l ' rc=0 ' repro/*.rc | wc -l); f=$(( $(ls repro/*.rc | wc -l) - p ))
+            n=$(ls repro/*.rc 2>/dev/null | wc -l)
+            p=$(cat repro/*.rc 2>/dev/null | grep -c ' rc=0 ')
+            f=$(( n - p ))
             [ "$STOP" = yes ] && [ $f -gt 0 ] && break
           done
           sort -n repro/*.rc | sed 's/^/run /' | tee -a summary.txt
-          echo "TALLY pass=$p fail=$f of $(ls repro/*.rc | wc -l) (asked $N)" | tee -a summary.txt
+          echo "TALLY pass=$p fail=$f of $n (asked $N)" | tee -a summary.txt
+          grep -a -h -m1 -E 'RESULT' repro/*.log 2>/dev/null | cut -c1-160 | sed 's/^/  /' | tee -a summary.txt
+          [ "$n" = "$N" ] || [ "$STOP" = yes ] || { echo "TALLY counted $n of $N runs"; exit 1; }
       - name: Summary
         if: always()
         run: |
