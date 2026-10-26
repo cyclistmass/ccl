@@ -781,7 +781,7 @@ reset_lisp_process(ExceptionInformation *xp)
   tcr->save_allocbase = (void *) ptr_from_lispobj(xpGPR(xp, Rallocbase));
 
   tcr->save_vsp = (LispObj *) ptr_from_lispobj(((lisp_frame *)ptr_from_lispobj(last_catch->csp))->savevsp);
-  tcr->save_tsp = (LispObj *) ptr_from_lispobj((LispObj) ptr_to_lispobj(last_catch)) - (2*node_size); /* account for TSP header */
+  tcr->save_tsp = (LispObj *) ptr_from_lispobj((LispObj) ptr_to_lispobj(last_catch) - (2*node_size)); /* account for TSP header */
 
   start_lisp(tcr, 1);
 }
