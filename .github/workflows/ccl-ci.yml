@@ -106,11 +106,11 @@ jobs:
           curl -sSfL -o boot.tar.gz "$URL"
           cd ccl && tar xf ../boot.tar.gz
           echo "HEAD $(git rev-parse --short=8 HEAD)" | tee -a ../summary.txt
-          s=$(date +%s); (cd lisp-kernel/$KD && make) > ../make.log 2>&1; rc=$?
+          rc=0; s=$(date +%s); (cd lisp-kernel/$KD && make) > ../make.log 2>&1 || rc=$?
           echo "KMAKE rc=$rc secs=$(( $(date +%s) - s ))" | tee -a ../summary.txt
           [ $rc = 0 ] || { tail -30 ../make.log; exit 1; }
           s=$(date +%s)
-          timeout -k 30 2400 ./$K --batch --quiet -n -e '(rebuild-ccl :clean t)' </dev/null > ../rebuild.log 2>&1; rc=$?
+          rc=0; timeout -k 30 2400 ./$K --batch --quiet -n -e '(rebuild-ccl :clean t)' </dev/null > ../rebuild.log 2>&1 || rc=$?
           echo "REBUILD rc=$rc secs=$(( $(date +%s) - s )) warnings=$(grep -ci warning ../rebuild.log)" | tee -a ../summary.txt
           [ $rc = 0 ] || { tail -40 ../rebuild.log; exit 1; }
           echo "IMG $(md5sum $K $K.image | cut -c1-8 | tr '\n' ' ')" | tee -a ../summary.txt
@@ -120,7 +120,7 @@ jobs:
           cd ccl-tests
           echo "TESTS HEAD $(git rev-parse --short=8 HEAD)" | tee -a ../summary.txt
           s=$(date +%s)
-          timeout -k 60 3600 make CCL=../ccl/$K > ../suite.log 2>&1; rc=$?
+          rc=0; timeout -k 60 3600 make CCL=../ccl/$K > ../suite.log 2>&1 || rc=$?
           echo "SUITE rc=$rc secs=$(( $(date +%s) - s ))" | tee -a ../summary.txt
           grep -a -E 'tests? (succeeded|failed)|out of|of [0-9]+ tests' ../suite.log | tail -3 | tee -a ../summary.txt
           grep -a -A3 'tests failed' ../suite.log | grep -a -o -E 'CCL\.[A-Z0-9.#-]+' | sort -u | sed 's/^/FAILING /' | tee -a ../summary.txt
