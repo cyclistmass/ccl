@@ -97,7 +97,7 @@ jobs:
         run: |
           if [ "$ARCH" = arm64 ]; then
             K=arm64cl KD=linuxarm64
-            URL=https://github.com/Clozure/ccl/releases/download/v1.13-arm64-pre2/linuxarm64.tar.gz
+            URL=https://github.com/Clozure/ccl/releases/latest/download/linuxarm64.tar.gz
           else
             K=lx86cl64 KD=linuxx8664
             URL=https://github.com/Clozure/ccl/releases/latest/download/linuxx86.tar.gz
