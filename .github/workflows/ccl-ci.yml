@@ -108,12 +108,15 @@ jobs:
           echo "HEAD $(git rev-parse --short=8 HEAD)" | tee -a ../summary.txt
           rc=0; s=$(date +%s); (cd lisp-kernel/$KD && make) > ../make.log 2>&1 || rc=$?
           echo "KMAKE rc=$rc secs=$(( $(date +%s) - s ))" | tee -a ../summary.txt
-          [ $rc = 0 ] || { tail -30 ../make.log; exit 1; }
+          [ $rc = 0 ] || { echo "NOT-BUILT step=KMAKE rc=$rc" | tee -a ../summary.txt; tail -30 ../make.log; exit 1; }
           s=$(date +%s)
-          rc=0; timeout -k 30 2400 ./$K --batch --quiet -n -e '(rebuild-ccl :clean t)' </dev/null > ../rebuild.log 2>&1 || rc=$?
+          rc=0; timeout -k 30 2400 ./$K --batch --quiet -n -e '(rebuild-ccl :clean t)' < <(:) > ../rebuild.log 2>&1 || rc=$?
           echo "REBUILD rc=$rc secs=$(( $(date +%s) - s )) warnings=$(grep -ci warning ../rebuild.log)" | tee -a ../summary.txt
-          [ $rc = 0 ] || { tail -40 ../rebuild.log; exit 1; }
+          [ $rc = 0 ] || { echo "NOT-BUILT step=REBUILD rc=$rc" | tee -a ../summary.txt; tail -40 ../rebuild.log; exit 1; }
           echo "IMG $(md5sum $K $K.image | cut -c1-8 | tr '\n' ' ')" | tee -a ../summary.txt
+          # KI-287: positive proof that the tree built, for the Reproducer
+          # guard.  Absence covers a Build that FAILED and one that never ran.
+          : > ../built.ok
       - name: Suite
         if: inputs.suite == 'yes'
         run: |
@@ -138,12 +141,22 @@ jobs:
           # so -e must be off, or one() exits before it writes its .rc file
           # and the tally counts only the passing runs.
           set +e
+          # KI-287: this step's `if` carries !cancelled(), which switches OFF
+          # the implicit success(), so it also runs when the BUILD failed.  That
+          # is wanted after a red SUITE and wrong after a red BUILD: with no
+          # image every run fails and the TALLY reads as a reproduction.
+          if [ ! -f built.ok ]; then
+            grep -q '^NOT-BUILT' summary.txt 2>/dev/null \
+              || echo "NOT-BUILT step=BUILD rc=none (Build did not run)" | tee -a summary.txt
+            echo "REPRO none: tree not built, no tally" | tee -a summary.txt
+            exit 1
+          fi
           F=$PWD/ccl-tests/$F; mkdir -p repro
           echo "REPRO $(md5sum "$F" | cut -c1-8) n=$N par=$P timeout=$TO" | tee -a summary.txt
           one() {  # one <i>: a fresh process group, killed whole on timeout
             local s=$(date +%s)
             (cd ccl && setsid timeout -k 10 "$TO" ./$K --no-init --batch -l "$F" \
-               > ../repro/$1.log 2>&1 < /dev/null); local rc=$?
+               > ../repro/$1.log 2>&1 < <(:)); local rc=$?
             echo "$1 rc=$rc secs=$(( $(date +%s) - s ))" > repro/$1.rc
           }
           i=0; p=0; f=0
