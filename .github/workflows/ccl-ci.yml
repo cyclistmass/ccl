@@ -1,8 +1,8 @@
 # ccl-ci.yml -- pre-send check on the public fork cyclistmass/ccl.
 # Lives alone on the fork's default branch `fork-ci` (an orphan branch),
 # so it never rides into a PR.  Dispatched by tools/fork-ci.sh.
-# Each tree builds the way Clozure's own CI does (kernel make, then
-# (rebuild-ccl :clean t)), runs the ccl-tests suite, then runs an
+# Each tree gets the maintainers' full build (kernel make, then
+# (rebuild-ccl :full t)), runs the ccl-tests suite, then runs an
 # optional reproducer N times, P at a time, with a kill timeout.
 # Holds CCL content only.  Nothing from GM or ARIS ever goes here.
 name: ccl-ci
@@ -114,7 +114,7 @@ jobs:
           echo "KMAKE rc=$rc secs=$(( $(date +%s) - s ))" | tee -a ../summary.txt
           [ $rc = 0 ] || { echo "NOT-BUILT step=KMAKE rc=$rc" | tee -a ../summary.txt; tail -30 ../make.log; exit 1; }
           s=$(date +%s)
-          rc=0; timeout -k 30 2400 ./$K --batch --quiet -n -e '(rebuild-ccl :clean t)' < <(:) > ../rebuild.log 2>&1 || rc=$?
+          rc=0; timeout -k 30 2400 ./$K --batch --quiet -n -e '(rebuild-ccl :full t)' < <(:) > ../rebuild.log 2>&1 || rc=$?
           echo "REBUILD rc=$rc secs=$(( $(date +%s) - s )) warnings=$(grep -ci warning ../rebuild.log)" | tee -a ../summary.txt
           [ $rc = 0 ] || { echo "NOT-BUILT step=REBUILD rc=$rc" | tee -a ../summary.txt; tail -40 ../rebuild.log; exit 1; }
           echo "IMG $(md5sum $K $K.image | cut -c1-8 | tr '\n' ' ')" | tee -a ../summary.txt
