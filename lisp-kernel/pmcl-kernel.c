@@ -975,8 +975,17 @@ wait_for_signal(int signo, int seconds, int milliseconds)
     return EINVAL;
   }
   if (user_signal_semaphores[signo] == 0) {
-    user_signal_semaphores[signo] = (natural)new_semaphore(0);
-    install_signal_handler(signo,(void *)user_signal_handler, 0);
+    /* Two threads can get here at once for the same signal.  Only one
+       semaphore may be installed, or the other thread waits on one
+       that the handler never signals. */
+    extern natural store_conditional(natural*, natural, natural);
+    void *s = new_semaphore(0);
+
+    if (store_conditional(&user_signal_semaphores[signo], 0, (natural)s) == 0) {
+      install_signal_handler(signo,(void *)user_signal_handler, 0);
+    } else {
+      destroy_semaphore(&s);
+    }
   }
   return wait_on_semaphore((void *)user_signal_semaphores[signo],seconds,milliseconds);
 #endif
