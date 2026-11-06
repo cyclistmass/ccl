@@ -65,7 +65,7 @@ jobs:
           assert os.environ["ARCHES"].split(), "arches is empty"
           assert os.environ["TREES"].split(), "trees is empty"
           for a in os.environ["ARCHES"].split():
-              assert a in ("x86", "arm64"), a
+              assert a in ("x86", "x8632", "arm64"), a
               for t in os.environ["TREES"].split():
                   m = re.fullmatch(r"([A-Za-z0-9_-]+)=([\w.-]+/[\w.-]+)@([\w./-]+)", t)
                   assert m, t
@@ -102,6 +102,13 @@ jobs:
           if [ "$ARCH" = arm64 ]; then
             K=arm64cl KD=linuxarm64
             URL=https://github.com/Clozure/ccl/releases/latest/download/linuxarm64.tar.gz
+          elif [ "$ARCH" = x8632 ]; then
+            # The 32-bit x86 kernel shares x86-exceptions.c with x86-64, so a
+            # change there needs this build too.  The runner needs -m32 libs.
+            sudo apt-get update -q > /dev/null
+            sudo apt-get install -y -q gcc-multilib > /dev/null
+            K=lx86cl KD=linuxx8632
+            URL=https://github.com/Clozure/ccl/releases/latest/download/linuxx86.tar.gz
           else
             K=lx86cl64 KD=linuxx8664
             URL=https://github.com/Clozure/ccl/releases/latest/download/linuxx86.tar.gz
