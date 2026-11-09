@@ -1516,6 +1516,17 @@ mark_memoized_area(area *a, natural num_memo_dnodes, bitvector refidx)
              we process them weakly here, nothing will delete the unreferenced
              elements. */
           if (!(hp->flags & nhash_weak_value_mask)) {
+            /* Its keys are skipped below as weak, so reaphashv must
+               visit it.  A vector that was not yet weak when a GC
+               marked it never went on GCweakvll; add it now. */
+            LispObj v = GCweakvll;
+            while (v && (v != ptr_to_lispobj(hp))) {
+              v = deref(v,1);
+            }
+            if (v == 0) {
+              hp->link = GCweakvll;
+              GCweakvll = ptr_to_lispobj(hp);
+            }
             /* If header_count is odd, this cuts off the last header field */
             /* That case is handled specially above */
             hash_dnode_limit = memo_dnode + ((hash_table_vector_header_count) >>1);
