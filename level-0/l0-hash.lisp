@@ -1271,7 +1271,11 @@ before doing so.")
                 (setf (nhash.vector.flags old-vector) flags)
                 (setq weak-flags nil)
                 (return-from grow-hash-table (%rehash hash)))
-              (setq vector (%cons-nhash-vector total-size 0))
+              ;; Make the new vector weak from the start.  The GC puts a
+              ;; weak vector on its list only when it marks it, so a
+              ;; vector marked during the copy while not yet weak never
+              ;; gets reaped, but its keys are still treated as weak.
+              (setq vector (%cons-nhash-vector total-size weak-flags))
               (do* ((index 0 (1+ index))
                     (vector-index (index->vector-index 0) (+ vector-index 2)))
                    ((>= index old-total-size))
