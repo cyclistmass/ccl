@@ -1978,15 +1978,27 @@ before doing so.")
 
 (defun %cons-nhash-vector (size &optional (flags 0))
   (declare (fixnum size))
-  (let* ((vector (%alloc-misc (+ (+ size size) $nhash.vector_overhead) target::subtag-hash-vector free-hash-marker)))
+  (let* ((n (+ (+ size size) $nhash.vector_overhead))
+         (vector (%alloc-misc n target::subtag-hash-vector)))
+    (declare (fixnum n))
+    ;; Set the weak flags before the long fill.  The GC puts a weak
+    ;; vector on its list only when it marks it, so a vector marked
+    ;; during the fill while not yet weak never gets reaped, but its
+    ;; keys are later treated as weak.  The vector is zeroed, so the
+    ;; link is already 0; do not store it again, because the GC may
+    ;; have put the vector on its list by then.
+    (setf (nhash.vector.flags vector) flags)
+    (do* ((i $nhash.vector_overhead (1+ i)))
+         ((= i n))
+      (declare (fixnum i))
+      (setf (%svref vector i) free-hash-marker))
     (%init-nhash-vector vector flags)
     vector))
 
 (defun %init-nhash-vector (vector flags)
   (let ((size (vector-index->index (uvsize vector))))
     (declare (fixnum size))
-    (setf (nhash.vector.link vector) 0
-          (nhash.vector.flags vector) flags
+    (setf (nhash.vector.flags vector) flags
           (nhash.vector.gc-count vector) (%get-gc-count)
           (nhash.vector.free-alist vector) nil
           (nhash.vector.finalization-alist vector) nil
