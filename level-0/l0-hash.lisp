@@ -1974,9 +1974,12 @@ before doing so.")
 
 (defun %cons-nhash-vector (size &optional (flags 0))
   (declare (fixnum size))
-  (let* ((vector (%alloc-misc (+ (+ size size) $nhash.vector_overhead) target::subtag-hash-vector free-hash-marker)))
-    (%init-nhash-vector vector flags)
-    vector))
+  (%lock-gc-lock)
+  (unwind-protect
+       (let* ((vector (%alloc-misc (+ (+ size size) $nhash.vector_overhead) target::subtag-hash-vector free-hash-marker)))
+         (%init-nhash-vector vector flags)
+         vector)
+    (%unlock-gc-lock)))
 
 (defun %init-nhash-vector (vector flags)
   (let ((size (vector-index->index (uvsize vector))))
