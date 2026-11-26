@@ -165,18 +165,24 @@ jobs:
           # KI-291: a P of 0 never moves i, so the loop spun to the job timeout.
           case "$N$P" in *[!0-9]*|'') echo "REPRO bad input n=$N par=$P" | tee -a summary.txt; exit 1;; esac
           [ "$N" -ge 1 ] && [ "$P" -ge 1 ] || { echo "REPRO bad input n=$N par=$P" | tee -a summary.txt; exit 1; }
-          F=$PWD/ccl-tests/$F; mkdir -p repro
+          REL=$F; F=$PWD/ccl-tests/$F; mkdir -p repro
           echo "REPRO $(md5sum "$F" | cut -c1-8) n=$N par=$P timeout=$TO" | tee -a summary.txt
-          one() {  # one <i>: a fresh process group, killed whole on timeout
+          # KI-320: runs at once that share one tests checkout compile the same
+          # fasls and break each other ("Not a FASL file", "File exists").
+          # Each slot gets its own copy; slot 1 keeps the checkout.
+          ROOT=$PWD
+          slot() { [ "$1" = 1 ] && echo "$ROOT/ccl-tests" || echo "$ROOT/repro-tests-$1"; }
+          for j in $(seq 2 $P); do rm -rf "$(slot $j)"; cp -a ccl-tests "$(slot $j)"; done
+          one() {  # one <i> <slot>: a fresh process group, killed whole on timeout
             local s=$(date +%s)
-            (cd ccl && setsid timeout -k 10 "$TO" ./$K --no-init --batch -l "$F" \
+            (cd ccl && setsid timeout -k 10 "$TO" ./$K --no-init --batch -l "$(slot $2)/$REL" \
                > ../repro/$1.log 2>&1 < <(:)); local rc=$?
             echo "$1 rc=$rc secs=$(( $(date +%s) - s ))" > repro/$1.rc
           }
           i=0; p=0; f=0
           while [ $i -lt $N ]; do
             for j in $(seq 1 $P); do
-              [ $i -lt $N ] || break; i=$((i+1)); one $i &
+              [ $i -lt $N ] || break; i=$((i+1)); one $i $j &
             done
             wait
             n=$(ls repro/*.rc 2>/dev/null | wc -l)
